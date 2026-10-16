@@ -9,7 +9,7 @@ import streamlit as st
 st.set_page_config(page_title="FaceTrack", page_icon="◉", layout="wide", initial_sidebar_state="expanded")
 
 # Replace this URL with your own YouTube project-demo link whenever it is ready.
-WALKTHROUGH_YOUTUBE_URL = "https://www.youtube.com/watch?v=PU9ISE25M64&list=RDPU9ISE25M64&start_radio=1"
+WALKTHROUGH_YOUTUBE_URL = "https://www.youtube.com/watch?v=Lif1jCNxze0&list=RDLif1jCNxze0&start_radio=1"
 
 CSS = """
 <style>
