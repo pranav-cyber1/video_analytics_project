@@ -119,14 +119,35 @@ if "page" not in st.session_state:
     st.session_state.page = "Home"
 
 def get_cascade():
+    # FaceTrack uses the legacy Haar Cascade API available in OpenCV 4.x.
+    # OpenCV 5 moved this API into the contrib xobjdetect module.
     if not hasattr(cv2, "CascadeClassifier"):
-        raise RuntimeError("OpenCV loaded without CascadeClassifier. Remove conflicting OpenCV packages, install opencv-python-headless, then reboot the app.")
-    cascade_path = Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml"
+        version = getattr(cv2, "__version__", "unknown")
+        raise RuntimeError(
+            f"Incompatible OpenCV version ({version}): cv2.CascadeClassifier is not available. "
+            "This app requires OpenCV 4.x. In the repository root, set "
+            "requirements.txt to opencv-python-headless==4.14.0.94 and remove "
+            "opencv-python, opencv-contrib-python, and opencv-contrib-python-headless. "
+            "Then push the change and reboot the Streamlit app to rebuild its environment."
+        )
+
+    cascade_dir = getattr(getattr(cv2, "data", None), "haarcascades", None)
+    if not cascade_dir:
+        raise RuntimeError(
+            "OpenCV did not expose its Haar Cascade data directory. "
+            "Verify that opencv-python-headless==4.14.0.94 is installed."
+        )
+
+    cascade_path = Path(cascade_dir) / "haarcascade_frontalface_default.xml"
     if not cascade_path.is_file():
-        raise RuntimeError("The Haar Cascade file is missing. Reinstall opencv-python-headless and reboot the app.")
+        raise RuntimeError(
+            f"The Haar Cascade XML file was not found at {cascade_path}. "
+            "Reinstall the pinned OpenCV 4.x dependency and rebuild the app."
+        )
+
     cascade = cv2.CascadeClassifier(str(cascade_path))
     if cascade.empty():
-        raise RuntimeError("OpenCV could not load the Haar Cascade file.")
+        raise RuntimeError(f"OpenCV could not load the Haar Cascade file: {cascade_path}")
     return cascade
 
 
