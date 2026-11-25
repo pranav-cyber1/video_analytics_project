@@ -1,6 +1,11 @@
 import os
+import html
+import re
 import tempfile
+import subprocess
 from pathlib import Path
+
+import imageio_ffmpeg
 import cv2
 import numpy as np
 import streamlit as st
@@ -9,6 +14,8 @@ st.set_page_config(page_title="FaceTrack | Project Report", page_icon="◉", lay
 
 CSS = """
 <style>
+html {scroll-behavior:smooth; scroll-padding-top:112px;}
+.toc-anchor {display:block; width:1px; height:1px; margin:0; padding:0; position:relative; scroll-margin-top:112px; pointer-events:none;}
 #MainMenu, footer, header {visibility:hidden;}
 [data-testid="stToolbar"], [data-testid="stDecoration"] {display:none;}
 .stApp {background:#fbfcfe; color:#263445;}
@@ -25,10 +32,13 @@ CSS = """
 .doc-nav {position:sticky; top:88px; padding:12px 15px 24px 0; border-right:1px solid #dce4ea;
     font:14px/1.6 Arial,sans-serif; color:#34495a; max-height:calc(100vh - 110px); overflow:auto;}
 .doc-nav .nav-title {color:#477b80; margin:0 0 10px; font-weight:700; font-size:15px;}
-.doc-nav a {display:block; color:#34495a; text-decoration:none; padding:5px 8px;
-    border-left:2px solid #dce4ea; margin-left:0;}
+ .doc-nav a {display:block; color:#34495a; text-decoration:none; padding:7px 9px;
+    border-left:2px solid #dce4ea; margin-left:0; cursor:pointer; border-radius:0 8px 8px 0;
+    text-decoration:underline; text-decoration-color:#d3e0e3; text-underline-offset:3px;
+    transition:color .15s ease, background .15s ease, border-color .15s ease;}
 .doc-nav a.sub {padding-left:22px; font-size:13px;}
-.doc-nav a:hover {color:#28777b; border-left:3px solid #4c9292; background:#f0f6f7;}
+.doc-nav a:hover, .doc-nav a:focus-visible {color:#176e75; border-left:3px solid #4c9292;
+    background:#edf5f5; text-decoration:underline; text-decoration-color:#8fb8b8; text-underline-offset:3px; outline:none;}
 .article {max-width:1000px; padding:0 22px 24px 30px; font-family:Arial,sans-serif; color:#263445;}
 .team-card {
         position:sticky; top:92px; width:100%; box-sizing:border-box;
@@ -115,6 +125,57 @@ CSS = """
 """
 st.markdown(CSS, unsafe_allow_html=True)
 
+
+def render_report_markup(markup, unsafe_allow_html=True):
+    """Render report HTML and place page-level anchors before identified headings.
+
+    `unsafe_allow_html` is accepted because existing report calls pass it as a
+    keyword argument. The report content is trusted, application-authored HTML.
+    `st.html` inserts anchor elements into the main document (not an iframe),
+    allowing the table-of-contents links to target them directly.
+    """
+    heading_pattern = re.compile(
+        r'<h[1-6]\b[^>]*\bid="([^"]+)"[^>]*>',
+        re.IGNORECASE,
+    )
+    matches = list(heading_pattern.finditer(markup))
+
+    if not matches:
+        if markup.strip():
+            st.markdown(markup, unsafe_allow_html=unsafe_allow_html)
+        return
+
+    cursor = 0
+    for index, match in enumerate(matches):
+        preceding_content = markup[cursor:match.start()]
+        if preceding_content.strip():
+            st.markdown(preceding_content, unsafe_allow_html=unsafe_allow_html)
+
+        anchor_id = match.group(1)
+        safe_id = html.escape(anchor_id, quote=True)
+        st.html(
+            f'<div class="toc-anchor" id="{safe_id}" '
+            f'tabindex="-1" aria-hidden="true"></div>'
+        )
+
+        section_end = (
+            matches[index + 1].start()
+            if index + 1 < len(matches)
+            else len(markup)
+        )
+        section_markup = markup[match.start():section_end]
+        # The ID lives on the explicit st.html anchor, avoiding duplicate IDs.
+        section_markup = re.sub(
+            r'\s+id="' + re.escape(anchor_id) + r'"',
+            "",
+            section_markup,
+            count=1,
+        )
+        st.markdown(section_markup, unsafe_allow_html=unsafe_allow_html)
+        cursor = section_end
+
+
+
 if "page" not in st.session_state:
     st.session_state.page = "Home"
 
@@ -195,6 +256,45 @@ def make_track(frame, box, track_id):
     return {"id": track_id, "box": box, "hist": hist, "missed": 0, "trail": []}
 
 
+
+def encode_browser_mp4(source_path):
+    """Transcode an OpenCV MP4V file to browser-compatible H.264 MP4."""
+    source_path = Path(source_path)
+    final_path = Path(tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name)
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    command = [
+        ffmpeg_exe,
+        "-y",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-i", str(source_path),
+        "-map", "0:v:0",
+        "-an",
+        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        str(final_path),
+    ]
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, check=False)
+        if completed.returncode != 0 or not final_path.is_file() or final_path.stat().st_size == 0:
+            details = (completed.stderr or "FFmpeg did not produce an output file.").strip()
+            raise RuntimeError(details[-1600:])
+        return str(final_path)
+    except Exception as exc:
+        if final_path.exists():
+            final_path.unlink()
+        raise RuntimeError(
+            "Could not convert the processed video to browser-compatible H.264 MP4. "
+            f"FFmpeg error: {exc}"
+        ) from exc
+    finally:
+        if source_path.exists():
+            source_path.unlink()
+
 def process_video(input_path, preview, progress, status):
     cascade = load_cascade()
     cap = cv2.VideoCapture(input_path)
@@ -208,11 +308,13 @@ def process_video(input_path, preview, progress, status):
     if width < 1 or height < 1:
         cap.release()
         raise RuntimeError("The uploaded video has invalid dimensions.")
-    output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
-    writer = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+    intermediate_path = tempfile.NamedTemporaryFile(delete=False, suffix="_opencv.mp4").name
+    writer = cv2.VideoWriter(intermediate_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
     if not writer.isOpened():
         cap.release()
-        raise RuntimeError("Could not create the output video. Try a shorter MP4 clip.")
+        if os.path.exists(intermediate_path):
+            os.remove(intermediate_path)
+        raise RuntimeError("Could not create the intermediate video. Try a shorter MP4 clip.")
     tracks, next_id, frame_index, total_detections = {}, 1, 0, 0
     max_frames = 500
     try:
@@ -280,8 +382,10 @@ def process_video(input_path, preview, progress, status):
     finally:
         cap.release(); writer.release(); progress.empty()
     if frame_index == 0:
-        os.remove(output_path)
+        if os.path.exists(intermediate_path):
+            os.remove(intermediate_path)
         raise RuntimeError("No readable frames were found in this video.")
+    output_path = encode_browser_mp4(intermediate_path)
     return output_path, {"frames": frame_index, "tracks": next_id - 1, "detections": total_detections, "width": width, "height": height}
 
 
@@ -399,7 +503,7 @@ def show_frame_demo(stage):
         with a:
             st.image(cv2.cvtColor(d["roi"], cv2.COLOR_BGR2RGB), caption="Detected face ROI used to build the appearance model", use_container_width=True)
         with b:
-            st.image(cv2.cvtColor(d["track_view"], cv2.COLOR_BGR2RGB), caption="Mean Shift on translated frame: orange = initial window, green = updated window, red = weighted centroid", use_container_width=True)
+            st.image(cv2.cvtColor(d["track_view"], cv2.COLOR_BGR2RGB), caption="Mean Shift on translated frame: Blue = initial window, green = updated window, red = weighted centroid", use_container_width=True)
         st.write("Actual HSV values from the first 4 × 6 pixels of the selected face crop (H, S, V):")
         st.dataframe(d["hsv_sample"].reshape(-1, 3), hide_index=True, use_container_width=True)
         st.bar_chart(d["hist"].reshape(-1), height=180)
@@ -409,7 +513,7 @@ def show_frame_demo(stage):
         st.latex(r"c_x=\frac{\sum_{x,y}B(x,y)x}{\sum_{x,y}B(x,y)},\quad c_y=\frac{\sum_{x,y}B(x,y)y}{\sum_{x,y}B(x,y)}")
         st.code(f"Initial window = {d['box']}\nBack-projection weighted centroid = ({cx:.2f}, {cy:.2f})\nOpenCV Mean Shift output window = {d['moved_box']}", language="text")
     elif stage == "association":
-        st.image(cv2.cvtColor(d["association_view"], cv2.COLOR_BGR2RGB), caption="Orange = Mean Shift predicted window; green = detection box in the translated frame", use_container_width=True)
+        st.image(cv2.cvtColor(d["association_view"], cv2.COLOR_BGR2RGB), caption="Blue = Mean Shift predicted window; green = detection box in the translated frame", use_container_width=True)
         A, B = d["moved_box"], d["detected_next"]
         ax, ay, aw, ah = A; bx, by, bw, bh = B
         ix1, iy1 = max(ax,bx), max(ay,by)
@@ -421,7 +525,6 @@ def show_frame_demo(stage):
 
 
 PYTHON_EQUIVALENT = r'''
-#!/usr/bin/env python3
 """
 FaceTrack: standalone Python/OpenCV implementation.
 
@@ -442,7 +545,10 @@ Usage:
 
 import argparse
 import os
+import subprocess
 from pathlib import Path
+
+import imageio_ffmpeg
 
 import cv2
 import numpy as np
@@ -456,6 +562,32 @@ MAX_TRACKING_DISPLACEMENT = 90
 MAX_MEAN_SHIFT_ITERATIONS = 10
 MEAN_SHIFT_EPSILON = 1
 MAX_FRAMES = 500
+
+
+def encode_h264_mp4(source_path, destination_path):
+    """Encode an OpenCV MP4V intermediate as browser-compatible H.264 MP4."""
+    source_path = Path(source_path)
+    destination_path = Path(destination_path)
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(source_path), "-map", "0:v:0", "-an",
+        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(destination_path),
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode != 0 or not destination_path.is_file() or destination_path.stat().st_size == 0:
+            raise RuntimeError((result.stderr or "H.264 encoding failed.")[-1600:])
+    except Exception:
+        if destination_path.exists():
+            destination_path.unlink()
+        raise
+    finally:
+        if source_path.exists():
+            source_path.unlink()
+    return destination_path
 
 
 def load_face_detector():
@@ -578,8 +710,9 @@ def process_video(input_path, output_path, max_frames=MAX_FRAMES):
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    intermediate_path = output_path.with_name(output_path.stem + "_opencv.mp4")
     writer = cv2.VideoWriter(
-        str(output_path),
+        str(intermediate_path),
         cv2.VideoWriter_fourcc(*"mp4v"),
         fps,
         (width, height),
@@ -587,7 +720,7 @@ def process_video(input_path, output_path, max_frames=MAX_FRAMES):
 
     if not writer.isOpened():
         capture.release()
-        raise RuntimeError("Could not create the output MP4 video.")
+        raise RuntimeError("Could not create the intermediate MP4 video.")
 
     tracks = {}
     next_track_id = 1
@@ -787,9 +920,11 @@ def process_video(input_path, output_path, max_frames=MAX_FRAMES):
         writer.release()
 
     if frame_index == 0:
-        if output_path.exists():
-            output_path.unlink()
+        if intermediate_path.exists():
+            intermediate_path.unlink()
         raise RuntimeError("No readable frames were found in the input video.")
+
+    encode_h264_mp4(intermediate_path, output_path)
 
     return {
         "frames": frame_index,
@@ -844,7 +979,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 '''
 
 
@@ -860,7 +994,7 @@ with left:
         if st.button("{ } Code", use_container_width=True):
             st.session_state.page = "Code"
             st.rerun()
-    st.markdown("""
+    st.html("""
     <div class="doc-nav">
       <div class="nav-title">PROJECT REPORT</div>
       <a href="#project-guidance">Project Guidance</a>
@@ -880,9 +1014,8 @@ with left:
       <a href="#results">6. Results & Limitations</a>
       <a href="#deployment">7. Deployment</a>
       <a href="#run-model">8. Run FaceTrack</a>
-      <a href="#source-code">Source Code</a>
     </div>
-    """, unsafe_allow_html=True)
+    """)
 
 with right:
     report_col, team_col = st.columns([4.1, 1.2], gap="large")
@@ -915,7 +1048,7 @@ with right:
             st.caption(f"Standalone Python/OpenCV implementation · {len(PYTHON_EQUIVALENT.splitlines()):,} lines")
             st.code(PYTHON_EQUIVALENT, language="python", line_numbers=True, wrap_lines=True)
         else:
-            st.markdown("""
+            render_report_markup("""
             <h1>Face Detection and Multi-Object Tracking in Video Using Haar Cascade and Mean Shift</h1>
             <p class="author">A classical computer-vision implementation using Python, OpenCV, NumPy and Streamlit</p>
 
@@ -932,7 +1065,7 @@ with right:
             <p>Tracking addresses this temporal association problem. Let the video be represented by frames <em>I</em><sub>1</sub>, <em>I</em><sub>2</sub>, ..., <em>I</em><sub>T</sub>. At each time step, the system must estimate the location of every active face and preserve its track label. A track can therefore be viewed as a sequence of bounding boxes associated with one persistent ID:</p>
             """, unsafe_allow_html=True)
             st.latex(r"\mathcal{T}_k=\{(t,\mathbf{b}_{t,k})\mid t\in\mathcal{F}_k\}")
-            st.markdown("""
+            render_report_markup("""
             <p>Here, <em>k</em> is the track ID, <em>t</em> is the frame index, and <strong>b</strong><sub>t,k</sub> = (x, y, w, h) is the face bounding box assigned to that track. The set F<sub>k</sub> contains the frames in which the track is considered active.</p>
             <p>The pipeline in this project has three main responsibilities:</p>
             <ol>
@@ -952,7 +1085,7 @@ with right:
             <p>The following diagram shows the full data flow implemented by the application. The upper path is the per-frame tracking path. The periodic detection path enters at frame 1 and then every eighth frame, and its detections are associated with the current track set.</p>
             """, unsafe_allow_html=True)
 
-            st.markdown("""
+            render_report_markup("""
             <div class="diagram-wrap">
             <svg viewBox="0 0 1120 650" width="100%" role="img" aria-label="FaceTrack processing architecture">
               <defs>
@@ -1034,25 +1167,25 @@ with right:
             </div>
             """, unsafe_allow_html=True)
 
-            st.markdown("""
+            render_report_markup("""
                 <h3>Architecture Walk-through Using One Image</h3>
                 <p>The bundled example is a fictional, locally stored group photograph. The same frame is passed through the actual OpenCV operations below. The face boxes, pixel values, histogram, back-projection, Mean Shift window and IoU score are computed when the app runs; no image is sent to an external service.</p>
                             <div class="note">The photo is a demonstration input only. It is stored beside this app as <code>facetrack_group_demo.png</code>; keep both files in the same directory when deploying.</div>
                 """, unsafe_allow_html=True)
             show_frame_demo("pipeline")
-            st.markdown("""
+            render_report_markup("""
             <h3 id="detection">3.1 Haar Cascade Face Detection — Frame-by-Frame Operation</h3>
             <p>For a selected frame, the detector first converts the BGR image into a single-channel grayscale image. This reduces the input from three colour channels to one intensity channel, which is the representation expected by the Haar Cascade classifier. Histogram equalisation is then applied to improve global contrast before detection.</p>
             """, unsafe_allow_html=True)
             show_frame_demo("detection")
             st.latex(r"I_t^{gray}(x,y)=0.114B_t(x,y)+0.587G_t(x,y)+0.299R_t(x,y)")
-            st.markdown("<p class='math-caption'>The standard weighted conversion from BGR intensity values to grayscale intensity.</p>", unsafe_allow_html=True)
+            render_report_markup("<p class='math-caption'>The standard weighted conversion from BGR intensity values to grayscale intensity.</p>", unsafe_allow_html=True)
             st.latex(r"\widetilde I_t=\operatorname{EqualizeHist}(I_t^{gray})")
-            st.markdown("""
+            render_report_markup("""
             <p>The cascade evaluates image sub-windows at multiple scales. Each stage rejects many non-face windows quickly; windows that pass the cascade are returned as candidate face rectangles. The application uses <code>scaleFactor=1.12</code>, <code>minNeighbors=5</code> and <code>minSize=(28, 28)</code>. The returned detection is represented as:</p>
             """, unsafe_allow_html=True)
             st.latex(r"\mathbf{d}_{t,j}=(x_{t,j},y_{t,j},w_{t,j},h_{t,j})")
-            st.markdown("""
+            render_report_markup("""
             <p>Here, (x, y) is the upper-left corner, w is width and h is height. The set of detections in frame t is D<sub>t</sub> = {d<sub>t,1</sub>, ..., d<sub>t,N</sub>}. The code invokes this detector in frame 1 and whenever the frame index is divisible by 8. Therefore, detection is a periodic correction stage rather than an operation performed on every frame.</p>
             <p>For every accepted detection, the corresponding rectangular image region is extracted. The region is converted to HSV and its hue histogram is calculated. This appearance descriptor initialises a new track or refreshes an already matched track.</p>
 
@@ -1064,19 +1197,19 @@ with right:
             """, unsafe_allow_html=True)
             show_frame_demo("tracking")
             st.latex(r"H_k(b)=\sum_{(x,y)\in R_k}M(x,y)\,\mathbb{1}\!\left[\operatorname{bin}(H(x,y))=b\right]")
-            st.markdown("""
+            render_report_markup("""
             <p>In this expression, b ∈ {0, ..., 31}, M(x,y) is the validity mask, and 1[·] is the indicator function. OpenCV normalises this histogram to the range [0, 255] using min-max normalisation. The histogram is stored in the track state and acts as the appearance model for that face.</p>
             <h4>Step 3: Calculate histogram back-projection</h4>
             <p>For the next frame, the whole frame is converted to HSV. Each pixel is assigned a value according to the stored track histogram at that pixel's hue bin. The resulting back-projection image has high values at locations whose hue is well represented in the tracked face model.</p>
             """, unsafe_allow_html=True)
             st.latex(r"B_t(x,y)=H_k\!\left(\operatorname{bin}(H_t(x,y))\right)")
-            st.markdown("""
+            render_report_markup("""
             <p>The back-projection is not itself a face detector. It is a response map that indicates where the current frame resembles the stored colour distribution. The existing bounding box provides the initial search window, restricting the Mean Shift search to a local neighbourhood.</p>
             <h4>Step 4: Move the tracking window using Mean Shift</h4>
             <p>Let W<sub>k</sub> be the current search window and let q<sub>i</sub> be the back-projection response at pixel position x<sub>i</sub>. The response acts as a non-negative weight. The weighted centroid is:</p>
             """, unsafe_allow_html=True)
             st.latex(r"\mathbf{c}_{new}=\frac{\sum_{\mathbf{x}_i\in W_k}q_i\mathbf{x}_i}{\sum_{\mathbf{x}_i\in W_k}q_i}")
-            st.markdown("""
+            render_report_markup("""
             <p>The window is translated toward this centroid. Mean Shift repeats the centroid calculation until convergence or until the iteration limit is reached. In this implementation, OpenCV's termination criteria allow at most 10 iterations and use an epsilon of 1 pixel. The returned window (x', y', w', h') becomes the predicted location for that track in the current frame.</p>
             <p>The application applies an additional displacement gate: the update is accepted only when |x'−x| + |y'−y| &lt; 90. If this condition fails, the track's missed counter is increased rather than accepting a potentially unstable jump. A successful update resets the missed counter to zero.</p>
             <h4>Step 5: Repeat for each active track</h4>
@@ -1091,9 +1224,9 @@ with right:
             st.latex(r"x_1=\max(x_A,x_B),\quad y_1=\max(y_A,y_B)")
             st.latex(r"x_2=\min(x_A+w_A,x_B+w_B),\quad y_2=\min(y_A+h_A,y_B+h_B)")
             st.latex(r"A_{\cap B}=\max(0,x_2-x_1)\max(0,y_2-y_1)")
-            st.markdown("<p>The union area is the sum of the two box areas minus their intersection area.</p>", unsafe_allow_html=True)
+            render_report_markup("<p>The union area is the sum of the two box areas minus their intersection area.</p>", unsafe_allow_html=True)
             st.latex(r"\operatorname{IoU}(A,B)=\frac{|A\cap B|}{|A|+|B|-|A\cap B|}")
-            st.markdown("""
+            render_report_markup("""
             <h4>Step 2: Build and sort candidate matches</h4>
             <p>The program computes IoU for every track-detection pair and sorts the pairs in descending order of overlap. It then scans the sorted list. A pair is accepted only if its IoU is at least 0.12 and neither its track nor its detection has already been used. This creates a greedy one-to-one assignment: one detection cannot update two tracks, and one track cannot be assigned two detections in the same association pass.</p>
             <h4>Step 3: Update matched tracks</h4>
@@ -1109,19 +1242,19 @@ with right:
             <p>A colour video frame is a three-dimensional discrete array. For height H, width W and three colour channels:</p>
             """, unsafe_allow_html=True)
             st.latex(r"I_t\in\{0,1,\ldots,255\}^{H\times W\times 3}")
-            st.markdown("<p>A bounding box is parameterised by its top-left coordinate and its dimensions. Its centre is useful for drawing the movement trail.</p>", unsafe_allow_html=True)
+            render_report_markup("<p>A bounding box is parameterised by its top-left coordinate and its dimensions. Its centre is useful for drawing the movement trail.</p>", unsafe_allow_html=True)
             st.latex(r"\mathbf{b}_t=(x_t,y_t,w_t,h_t),\qquad \mathbf{p}_t=\left(x_t+\frac{w_t}{2},y_t+\frac{h_t}{2}\right)")
-            st.markdown('<h3 id="histogram-math">4.2 HSV Histogram</h3>', unsafe_allow_html=True)
+            render_report_markup('<h3 id="histogram-math">4.2 HSV Histogram</h3>', unsafe_allow_html=True)
             st.latex(r"H_k(b)=\sum_{(x,y)\in R_k}M(x,y)\,\mathbb{1}[\operatorname{bin}(H(x,y))=b]")
             st.latex(r"\widehat H_k(b)=255\,\frac{H_k(b)-\min_jH_k(j)}{\max_jH_k(j)-\min_jH_k(j)}")
-            st.markdown('<h3 id="backprojection">4.3 Histogram Back-projection</h3>', unsafe_allow_html=True)
+            render_report_markup('<h3 id="backprojection">4.3 Histogram Back-projection</h3>', unsafe_allow_html=True)
             st.latex(r"B_t(x,y)=\widehat H_k(\operatorname{bin}(H_t(x,y)))")
-            st.markdown('<h3 id="meanshift-math">4.4 Mean Shift Window Update</h3>', unsafe_allow_html=True)
+            render_report_markup('<h3 id="meanshift-math">4.4 Mean Shift Window Update</h3>', unsafe_allow_html=True)
             st.latex(r"\mathbf{c}_{k+1}=\frac{\sum_{\mathbf{x}_i\in W_k}B_t(\mathbf{x}_i)\mathbf{x}_i}{\sum_{\mathbf{x}_i\in W_k}B_t(\mathbf{x}_i)}")
             st.latex(r"\|\mathbf{c}_{k+1}-\mathbf{c}_k\|_2<\varepsilon")
-            st.markdown('<h3 id="iou-math">4.5 Intersection over Union</h3>', unsafe_allow_html=True)
+            render_report_markup('<h3 id="iou-math">4.5 Intersection over Union</h3>', unsafe_allow_html=True)
             st.latex(r"\operatorname{IoU}(A,B)=\frac{|A\cap B|}{|A|+|B|-|A\cap B|}")
-            st.markdown("""
+            render_report_markup("""
             <p class="note">Implementation detail: the code uses OpenCV's <code>meanShift</code> routine with a maximum of 10 iterations and epsilon 1. The IoU association threshold is 0.12. The mathematical expressions describe the operations conceptually; OpenCV performs the corresponding pixel and window computations internally.</p>
 
             <div class="rule"></div>
@@ -1150,16 +1283,16 @@ with right:
             <h3>7.1 Install dependencies</h3>
             """, unsafe_allow_html=True)
             st.code("python3 -m venv .venv\nsource .venv/bin/activate\npython -m pip install --upgrade pip\npip install streamlit opencv-python-headless numpy", language="bash")
-            st.markdown("<h3>7.2 Start the application</h3><p>Run the following command from the project directory:</p>", unsafe_allow_html=True)
+            render_report_markup("<h3>7.2 Start the application</h3><p>Run the following command from the project directory:</p>", unsafe_allow_html=True)
             st.code("streamlit run app.py", language="bash")
-            st.markdown("""
+            render_report_markup("""
             <div class="rule"></div>
             <h2 id="run-model">8. Run FaceTrack on Your Video</h2>
             <p>Upload a short video to execute the complete pipeline described above. The uploader accepts MP4, MOV, AVI and M4V files. For a responsive first test, use a short clip with clearly visible faces and moderate camera motion.</p>
             """, unsafe_allow_html=True)
 
             with st.container(border=True):
-                st.markdown("""
+                render_report_markup("""
                 <div class="run-panel">
                   <h3 style="margin-top:0">Video processing console</h3>
                   <p>Upload a video to run face detection and tracking. The application will show the live annotated frames, report processing statistics and prepare an MP4 result.</p>
@@ -1200,7 +1333,8 @@ with right:
                                 with col:
                                     st.metric(label, value)
                             result = Path(out_path).read_bytes()
-                            st.video(result)
+                            st.caption("Processed output · H.264 encoded MP4")
+                            st.video(result, format="video/mp4")
                             st.download_button("⬇  Download tracked video", result,
                                                file_name="facetrack_output.mp4", mime="video/mp4",
                                                use_container_width=True)
@@ -1216,4 +1350,4 @@ with right:
                 else:
                     st.info("No video selected yet. Use the large upload area above to browse for a video or drag and drop one into it.")
 
-        st.markdown('</div>', unsafe_allow_html=True)
+        render_report_markup('</div>', unsafe_allow_html=True)
