@@ -71,7 +71,7 @@ html {scroll-behavior:smooth; scroll-padding-top:112px;}
 .article p {margin:12px 0 18px;}
 .article li {margin:7px 0;}
 .article .author {color:#56858a; font-size:15px; margin:0 0 28px;}
-.article .rule {border-top:1px solid #dce5e9; margin:34px 0;}
+
 .article .note {padding:12px 16px; background:#f0f6f7; border-left:4px solid #6b9b9d; color:#425b68;}
 .article code {background:#edf2f5; color:#29465b; padding:3px 6px; border-radius:4px;}
 .article pre {border:1px solid #dce5e9; border-radius:8px;}
@@ -525,6 +525,7 @@ def show_frame_demo(stage):
 
 
 PYTHON_EQUIVALENT = r'''
+#!/usr/bin/env python3
 """
 FaceTrack: standalone Python/OpenCV implementation.
 
@@ -1059,7 +1060,6 @@ with right:
             <p>The implementation maintains, for each track, a unique integer ID, a bounding box, a colour histogram, a missed-frame counter and a short centre-position history. The history is rendered as a movement trail. A track is removed after it has remained unmatched for more than 16 frames. The current implementation processes at most 500 frames from an uploaded video.</p>
             <p class="note">Scope: this is a classical tracking pipeline. It does not use a deep neural-network face detector, facial embeddings, or a learned re-identification model. Consequently, track identity is based on spatial overlap and colour similarity, not biometric identity recognition.</p>
 
-            <div class="rule"></div>
             <h2 id="introduction">1. Introduction</h2>
             <p>A video is a time-ordered sequence of images. A face may appear at different positions and scales in consecutive frames because of subject motion, camera motion, changes in pose, or changes in distance from the camera. If a detector is applied independently to every frame, it returns face locations but does not inherently indicate which detection in the current frame corresponds to a face observed earlier.</p>
             <p>Tracking addresses this temporal association problem. Let the video be represented by frames <em>I</em><sub>1</sub>, <em>I</em><sub>2</sub>, ..., <em>I</em><sub>T</sub>. At each time step, the system must estimate the location of every active face and preserve its track label. A track can therefore be viewed as a sequence of bounding boxes associated with one persistent ID:</p>
@@ -1075,12 +1075,10 @@ with right:
             </ol>
             <p>Finally, the application draws each active bounding box, writes its face ID near the box, stores the centre point in a short trajectory history, and exports the annotated frames as an MP4 video.</p>
 
-            <div class="rule"></div>
             <h2 id="demonstration">2. Project Demonstration</h2>
             <p>The demonstration section accepts a video file in MP4, MOV, AVI or M4V format. After upload, the original video is previewed. When processing is started, the application reads the video sequentially, displays periodic annotated previews and reports the current frame, active-track count and processing stage. At completion, it presents the processed video and a download control.</p>
             <p>The output annotation contains a coloured rectangular bounding box, a label of the form <code>FACE ID k</code>, and a polyline joining recent centre positions. These annotations are visual summaries of the tracker state; they do not change the underlying detection or association calculations.</p>
 
-            <div class="rule"></div>
             <h2 id="pipeline">3. Pipeline Architecture</h2>
             <p>The following diagram shows the full data flow implemented by the application. The upper path is the per-frame tracking path. The periodic detection path enters at frame 1 and then every eighth frame, and its detections are associated with the current track set.</p>
             """, unsafe_allow_html=True)
@@ -1236,7 +1234,6 @@ with right:
             <h4>Step 5: Remove stale tracks</h4>
             <p>After tracking and association, tracks with missed &gt; 16 are removed. This allows a face to be temporarily lost for a short interval without immediately deleting its ID, while preventing stale tracks from remaining indefinitely.</p>
 
-            <div class="rule"></div>
             <h2 id="mathematics">4. Mathematical Formulation</h2>
             <h3 id="video-frame">4.1 Frame Representation and Bounding-Box Coordinates</h3>
             <p>A colour video frame is a three-dimensional discrete array. For height H, width W and three colour channels:</p>
@@ -1257,7 +1254,6 @@ with right:
             render_report_markup("""
             <p class="note">Implementation detail: the code uses OpenCV's <code>meanShift</code> routine with a maximum of 10 iterations and epsilon 1. The IoU association threshold is 0.12. The mathematical expressions describe the operations conceptually; OpenCV performs the corresponding pixel and window computations internally.</p>
 
-            <div class="rule"></div>
             <h2 id="implementation">5. Implementation Details</h2>
             <p>The application is organised into small functions so that detection, appearance modelling, association and video processing remain separate operations:</p>
             <ul>
@@ -1270,14 +1266,12 @@ with right:
             </ul>
             <p>The output writer uses the MP4V codec and retains the input video's frame rate and spatial resolution. The preview is refreshed on the first frame and then every fifth frame, while detection is performed on the first frame and every eighth frame. The processing loop is capped at 500 frames to limit execution time in the hosted application.</p>
 
-            <div class="rule"></div>
             <h2 id="results">6. Results, Interpretation and Limitations</h2>
             <p>After successful processing, the application reports the number of processed frames, the number of IDs allocated, the total number of face detections, and the video resolution. The output video contains the visible tracking annotations and can be downloaded for inspection.</p>
             <p>The number of allocated track IDs is not necessarily equal to the number of people in the video. A person who disappears and later reappears may receive a new ID if the old track has expired or if the new detection cannot be associated with the old box. Likewise, two nearby faces may produce ambiguous overlap scores.</p>
             <p>Mean Shift relies on the tracked region's colour distribution. It can drift when the background has similar colours, when illumination changes substantially, or when the face rotates and its visible colour distribution changes. Haar Cascade may miss faces under strong pose changes, occlusion, poor illumination or very small image scale. IoU matching is based on geometric overlap and does not use facial appearance embeddings.</p>
             <p>These limitations are consistent with the project's objective: demonstrate an interpretable classical-computer-vision pipeline with explicit detection, histogram modelling, iterative localisation and geometric association.</p>
 
-            <div class="rule"></div>
             <h2 id="deployment">7. Deployment and Execution</h2>
             <p>Place the application source in a file named <code>app.py</code>. Create and activate a Python virtual environment, install the required packages, and launch Streamlit from the directory containing the file.</p>
             <h3>7.1 Install dependencies</h3>
@@ -1286,7 +1280,6 @@ with right:
             render_report_markup("<h3>7.2 Start the application</h3><p>Run the following command from the project directory:</p>", unsafe_allow_html=True)
             st.code("streamlit run app.py", language="bash")
             render_report_markup("""
-            <div class="rule"></div>
             <h2 id="run-model">8. Run FaceTrack on Your Video</h2>
             <p>Upload a short video to execute the complete pipeline described above. The uploader accepts MP4, MOV, AVI and M4V files. For a responsive first test, use a short clip with clearly visible faces and moderate camera motion.</p>
             """, unsafe_allow_html=True)
