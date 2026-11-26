@@ -1075,10 +1075,12 @@ with right:
             </ol>
             <p>Finally, the application draws each active bounding box, writes its face ID near the box, stores the centre point in a short trajectory history, and exports the annotated frames as an MP4 video.</p>
 
-            <h2 id="demonstration">2. Project Demonstration</h2>
-            <p>The demonstration section accepts a video file in MP4, MOV, AVI or M4V format. After upload, the original video is previewed. When processing is started, the application reads the video sequentially, displays periodic annotated previews and reports the current frame, active-track count and processing stage. At completion, it presents the processed video and a download control.</p>
-            <p>The output annotation contains a coloured rectangular bounding box, a label of the form <code>FACE ID k</code>, and a polyline joining recent centre positions. These annotations are visual summaries of the tracker state; they do not change the underlying detection or association calculations.</p>
+                        <h2 id="demonstration">2. Project Demonstration and Demo</h2>
+            """, unsafe_allow_html=True)
 
+            # YouTube Project Demonstration
+            st.video("https://www.youtube.com/watch?v=6o67hmDYLvw")
+            render_report_markup("""
             <h2 id="pipeline">3. Pipeline Architecture</h2>
             <p>The following diagram shows the full data flow implemented by the application. The upper path is the per-frame tracking path. The periodic detection path enters at frame 1 and then every eighth frame, and its detections are associated with the current track set.</p>
             """, unsafe_allow_html=True)
